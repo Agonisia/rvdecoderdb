@@ -18,7 +18,13 @@ package object rvdecoderdb {
         .filter(os.isFile)
         .map(f => (f.baseName, os.read(f), !f.segments.contains("unratified"), false)) ++
         custom
-          .map(f => (f.baseName, os.read(f), false, true)),
+          .flatMap(p => {
+            if (os.isFile(p)) {
+              Seq((p.baseName, os.read(p), false, true))
+            } else {
+              os.walk(p).filter(os.isFile).map(f => (f.baseName, os.read(f), false, true))
+            }
+          }),
       argLut(riscvOpcodes).view.mapValues(a => (a.lsb, a.msb)).toMap
     )
   }
@@ -64,6 +70,13 @@ package object rvdecoderdb {
   def extractResource(cl: ClassLoader): os.Path = {
     val rvdecoderdbPath = os.temp.dir()
     val rvdecoderdbTar  = os.temp(os.read(os.resource(cl) / "riscv-opcodes.tar"))
+    os.proc("tar", "xf", rvdecoderdbTar).call(rvdecoderdbPath)
+    rvdecoderdbPath
+  }
+
+  def extractCustomResource(cl: ClassLoader): os.Path = {
+    val rvdecoderdbPath = os.temp.dir()
+    val rvdecoderdbTar  = os.temp(os.read(os.resource(cl) / "riscv-custom-opcodes.tar"))
     os.proc("tar", "xf", rvdecoderdbTar).call(rvdecoderdbPath)
     rvdecoderdbPath
   }
