@@ -80,14 +80,10 @@ class SailCodeGenerator(params: SailCodeGeneratorParams) {
     params.outputDir / "arch"
   }
 
-  private val sail_ext_enabled_path      = archDir / "ext_enabled.sail"
-  private val sail_states_reset_path     = archDir / "states_reset.sail"
-  private val sail_states_define_path    = archDir / "states_define.sail"
   private val sail_states_operation_path = archDir / "states_op.sail"
-  private val sail_xlen_path             = params.outputDir / "rv_xlen.sail"
   private val sail_core_path             = params.outputDir / "rv_core.sail"
 
-  private val user_illegal_path = {
+  lazy private val user_illegal_path = {
     if (!os.exists(params.sailModelDir / "arch" / "illegal.sail")) {
       throw new Exception("illegal.sail not found")
     }
@@ -103,11 +99,8 @@ class SailCodeGenerator(params: SailCodeGeneratorParams) {
 
     val arch = Arch.fromLiteral(meta.march)
 
-    genReset(arch)
-    genArchStatesDef(arch)
     genArchStatesOp(arch)
 
-    genRVXLENSail(arch)
     genRVSail(arch)
   }
 
@@ -312,21 +305,6 @@ class SailCodeGenerator(params: SailCodeGeneratorParams) {
     )
   }
 
-  def genArchStatesDef(arch: Arch): Unit = {
-    val range      = if (arch.extensions.contains("e")) 0 to 15 else 0 to 31
-    val gprDefCode = range.map(i => s"register x$i : XLENBITS").mkString("\n")
-
-    os.write.over(
-      sail_states_define_path,
-      Seq(
-        "// GPRs",
-        gprDefCode,
-        "// Privilege",
-        "register cur_privilege : Privilege"
-      ).mkString("\n")
-    )
-  }
-
   def genReset(arch: Arch): Unit = {
     val range = if (arch.extensions.contains("e")) 0 to 15 else 0 to 31
 
@@ -343,9 +321,7 @@ class SailCodeGenerator(params: SailCodeGeneratorParams) {
 
     val csrs           = os.walk(user_csr_path).filter(_.ext == "sail").map(p => p.baseName)
     val csr_reset_code = csrs
-      .map(csr =>
-        s"""val reset_${csr} : unit -> unit"""
-      )
+      .map(csr => s"""val reset_${csr} : unit -> unit""")
       .mkString("\n")
 
     os.write.over(
@@ -374,7 +350,7 @@ class SailCodeGenerator(params: SailCodeGeneratorParams) {
 
     val x0OpCode = s"""function clause read_GPR(0b00000) = x0
        |// write to x0 is a no-op
-       |function clause write_GPR(0b00000, v : XLENBITS) = {
+       |function clause write_GPR(0b00000, v : bits(64)) = {
        |\t()
        |}
        |""".stripMargin
@@ -385,7 +361,7 @@ class SailCodeGenerator(params: SailCodeGeneratorParams) {
       .map { i =>
         val bit = to5BitStr(i)
         s"""function clause read_GPR(0b${bit}) = x$i
-         |function clause write_GPR(0b${bit}, v : XLENBITS) = {
+         |function clause write_GPR(0b${bit}, v : bits(64)) = {
          |\twrite_GPR_hook(0b${bit}, v);
          |\tx$i = v
          |}
@@ -397,9 +373,38 @@ class SailCodeGenerator(params: SailCodeGeneratorParams) {
   }
 
   def genCSRsOp(): String = {
-    os.walk(user_csr_path)
-      .filter(_.ext == "sail")
-      .map(os.read(_))
+    val csrs = os.read
+      .lines(user_csr_path / "csrs.csv")
+      .map(line =>
+        line match {
+          case s"${number},${csrname}" => (number, csrname)
+          case _                       => throw new Exception(s"invalid csv line: ${line}")
+        }
+      )
+
+    csrs
+      .map { case (number, csrname) => {
+        val read_op_path  = user_csr_path / "read" / s"${csrname}.sail"
+        if (!os.exists(read_op_path)) {
+          throw new Exception(s"missing read operation for ${csrname}")
+        }
+        val write_op_path = user_csr_path / "write" / s"${csrname}.sail"
+        if (!os.exists(write_op_path)) {
+          throw new Exception(s"missing write operation for ${csrname}")
+        }
+
+        val csrReadCode = s"""
+        |function clause read_CSR(${number}) = {
+        |${os.read(read_op_path)}
+        |}""".stripMargin
+
+        val csrWriteCode = s"""
+        |function clause write_CSR(${number}, value) = {
+        |${os.read(write_op_path)}
+        |}""".stripMargin
+
+        csrReadCode + "\n" + csrWriteCode
+      }}
       .mkString("\n\n")
   }
 
@@ -407,22 +412,6 @@ class SailCodeGenerator(params: SailCodeGeneratorParams) {
     os.write.over(
       sail_states_operation_path,
       Seq("// GPRs", genGPROp(arch), "// CSRs", genCSRsOp()).mkString("\n")
-    )
-  }
-
-  def genRVXLENSail(arch: Arch): Unit = {
-    os.write.over(
-      sail_xlen_path,
-      s"""type XLEN : Int = ${arch.xlen}
-         |type MXLEN : Int = ${arch.xlen}
-         |type SXLEN : Int = ${arch.xlen}
-         |let XLEN = sizeof(XLEN)
-         |let MXLEN = sizeof(MXLEN)
-         |let SXLEN = sizeof(SXLEN)
-         |type XLENBITS = bits(XLEN)
-         |type MXLENBITS = bits(MXLEN)
-         |type SXLENBITS = bits(SXLEN)
-         |""".stripMargin
     )
   }
 }
